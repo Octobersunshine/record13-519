@@ -363,6 +363,150 @@ class MeteringPool {
     }
   }
 
+  _getDayStartEnd(timestamp) {
+    const date = new Date(timestamp);
+    date.setHours(0, 0, 0, 0);
+    const start = date.getTime();
+    const end = start + 86400000 - 1;
+    return { start, end, date };
+  }
+
+  _isPeakHour(timestamp, peakHours) {
+    const hour = new Date(timestamp).getHours();
+    return hour >= peakHours.start && hour < peakHours.end;
+  }
+
+  _calculateCostByRecords(records, pricing) {
+    let peakEnergy = 0;
+    let offPeakEnergy = 0;
+    let flatEnergy = 0;
+
+    for (let i = 1; i < records.length; i++) {
+      const prev = records[i - 1];
+      const curr = records[i];
+      const timeDiffMs = curr.timestamp - prev.timestamp;
+      if (timeDiffMs <= 0) continue;
+
+      const timeDiffHours = timeDiffMs / 3600000;
+      const avgPower = (curr.power + prev.power) / 2;
+      const segmentEnergy = avgPower * timeDiffHours;
+
+      const midTimestamp = prev.timestamp + timeDiffMs / 2;
+      if (this._isPeakHour(midTimestamp, pricing.peakHours)) {
+        peakEnergy += segmentEnergy;
+      } else {
+        offPeakEnergy += segmentEnergy;
+      }
+    }
+
+    flatEnergy = peakEnergy + offPeakEnergy;
+
+    const peakCost = peakEnergy * pricing.peakRate;
+    const offPeakCost = offPeakEnergy * pricing.offPeakRate;
+    const flatCost = flatEnergy * pricing.flatRate;
+    const serviceCost = pricing.serviceFee;
+    const totalCost = peakCost + offPeakCost + serviceCost;
+
+    return {
+      energyBreakdown: {
+        peak: peakEnergy,
+        offPeak: offPeakEnergy,
+        flat: flatEnergy
+      },
+      costBreakdown: {
+        peak: peakCost,
+        offPeak: offPeakCost,
+        flat: flatCost,
+        service: serviceCost,
+        total: totalCost
+      }
+    };
+  }
+
+  generateDailyBill(pileId, dateTimestamp, pricing) {
+    const state = this.pool.get(pileId);
+    if (!state) return null;
+
+    const { start, end, date } = this._getDayStartEnd(dateTimestamp || Date.now());
+    const dayRecords = this.getRecords(pileId, start, end);
+
+    if (dayRecords.length === 0) {
+      return {
+        pileId,
+        date: date.toISOString().split('T')[0],
+        dateTimestamp: start,
+        recordCount: 0,
+        totalEnergy: 0,
+        energyBreakdown: { peak: 0, offPeak: 0, flat: 0 },
+        costBreakdown: { peak: 0, offPeak: 0, flat: 0, service: pricing.serviceFee, total: pricing.serviceFee },
+        priceInfo: { ...pricing },
+        status: 'no_data',
+        generatedAt: Date.now()
+      };
+    }
+
+    const calcResult = this._calculateCostByRecords(dayRecords, pricing);
+    const bucketData = state.dailyBuckets.get(this._getBucketKey(start, 86400000));
+
+    return {
+      pileId,
+      date: date.toISOString().split('T')[0],
+      dateTimestamp: start,
+      recordCount: dayRecords.length,
+      seqNoRange: {
+        start: dayRecords[0].seqNo,
+        end: dayRecords[dayRecords.length - 1].seqNo
+      },
+      timeRange: {
+        start: dayRecords[0].timestamp,
+        end: dayRecords[dayRecords.length - 1].timestamp
+      },
+      totalEnergy: calcResult.energyBreakdown.flat,
+      bucketEnergy: bucketData ? bucketData.energy : 0,
+      energyBreakdown: calcResult.energyBreakdown,
+      costBreakdown: calcResult.costBreakdown,
+      avgVoltage: dayRecords.reduce((s, r) => s + r.voltage, 0) / dayRecords.length,
+      avgCurrent: dayRecords.reduce((s, r) => s + r.current, 0) / dayRecords.length,
+      avgPower: dayRecords.reduce((s, r) => s + r.power, 0) / dayRecords.length,
+      priceInfo: { ...pricing },
+      status: 'generated',
+      generatedAt: Date.now()
+    };
+  }
+
+  generateAllDailyBills(dateTimestamp, pricing) {
+    const pileIds = this.getAllPileIds();
+    const bills = [];
+
+    for (const pileId of pileIds) {
+      const bill = this.generateDailyBill(pileId, dateTimestamp, pricing);
+      if (bill) {
+        bills.push(bill);
+      }
+    }
+
+    const summary = bills.reduce(
+      (acc, bill) => ({
+        totalEnergy: acc.totalEnergy + bill.totalEnergy,
+        peakEnergy: acc.peakEnergy + bill.energyBreakdown.peak,
+        offPeakEnergy: acc.offPeakEnergy + bill.energyBreakdown.offPeak,
+        peakCost: acc.peakCost + bill.costBreakdown.peak,
+        offPeakCost: acc.offPeakCost + bill.costBreakdown.offPeak,
+        serviceCost: acc.serviceCost + bill.costBreakdown.service,
+        totalCost: acc.totalCost + bill.costBreakdown.total,
+        pileCount: acc.pileCount + (bill.recordCount > 0 ? 1 : 0)
+      }),
+      { totalEnergy: 0, peakEnergy: 0, offPeakEnergy: 0, peakCost: 0, offPeakCost: 0, serviceCost: 0, totalCost: 0, pileCount: 0 }
+    );
+
+    return {
+      date: bills.length > 0 ? bills[0].date : new Date(dateTimestamp || Date.now()).toISOString().split('T')[0],
+      billCount: bills.length,
+      summary,
+      bills
+    };
+  }
+
   destroy() {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
