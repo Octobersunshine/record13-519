@@ -1,0 +1,17 @@
+{
+  "name": "charging-pile-server",
+  "version": "1.0.0",
+  "description": "充电桩实时数据接收服务 - 电压电流上报与内存计量池",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
