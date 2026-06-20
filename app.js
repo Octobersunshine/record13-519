@@ -15,10 +15,10 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post('/api/metering/report', validateMeteringData, (req, res, next) => {
+app.post('/api/metering/report', validateMeteringData, async (req, res, next) => {
   try {
     const { pileId, voltage, current, ...extra } = req.body;
-    const record = meteringPool.addRecord(pileId, { voltage, current, ...extra });
+    const record = await meteringPool.addRecord(pileId, { pileId, voltage, current, ...extra });
 
     res.json({
       success: true,
@@ -41,6 +41,27 @@ app.get('/api/metering/piles', (req, res, next) => {
         pileIds,
         poolSize
       }
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/metering/:pileId/state', (req, res, next) => {
+  try {
+    const { pileId } = req.params;
+    const state = meteringPool.getPileState(pileId);
+
+    if (!state) {
+      return res.status(404).json({
+        success: false,
+        error: '未找到该充电桩'
+      });
+    }
+
+    res.json({
+      success: true,
+      data: state
     });
   } catch (err) {
     next(err);
@@ -94,12 +115,13 @@ app.get('/api/metering/:pileId/records', (req, res, next) => {
 app.get('/api/metering/:pileId/statistics', (req, res, next) => {
   try {
     const { pileId } = req.params;
-    const { startTime, endTime } = req.query;
+    const { startTime, endTime, groupBy } = req.query;
 
     const startTs = startTime ? parseInt(startTime) : null;
     const endTs = endTime ? parseInt(endTime) : null;
+    const group = groupBy === 'hour' || groupBy === 'day' ? groupBy : 'none';
 
-    const stats = meteringPool.getStatistics(pileId, startTs, endTs);
+    const stats = meteringPool.getStatistics(pileId, startTs, endTs, group);
 
     if (!stats) {
       return res.status(404).json({
